@@ -9,8 +9,11 @@ from typing import List, Iterable, Union
 from ..tokenizers import TOKENIZERS
 from ..utils import my_log
 from .base import BaseScore, Signature
+from .utils import extract_word_ngrams
+
 
 sacrelogger = logging.getLogger('sacrebleu')
+
 
 class BLEUSignature(Signature):
     def __init__(self, args):
@@ -90,25 +93,6 @@ class BLEU:
             "Unknown smooth_method '{}'".format(self.smooth_method)
 
     @staticmethod
-    def extract_ngrams(line, min_order=1, max_order=NGRAM_ORDER) -> Counter:
-        """Extracts all the ngrams (min_order <= n <= max_order) from a sequence of tokens.
-
-        :param line: A segment containing a sequence of words.
-        :param min_order: Minimum n-gram length (default: 1).
-        :param max_order: Maximum n-gram length (default: NGRAM_ORDER).
-        :return: a dictionary containing ngrams and counts
-        """
-
-        ngrams = Counter() # type: Counter
-        tokens = line.split()
-        for n in range(min_order, max_order + 1):
-            for i in range(0, len(tokens) - n + 1):
-                ngram = ' '.join(tokens[i: i + n])
-                ngrams[ngram] += 1
-
-        return ngrams
-
-    @staticmethod
     def reference_stats(refs, output_len):
         """Extracts reference statistics for a given segment.
 
@@ -132,7 +116,7 @@ class BLEU:
                 if reflen < closest_len:
                     closest_len = reflen
 
-            ngrams_ref = BLEU.extract_ngrams(ref)
+            ngrams_ref = extract_word_ngrams(ref, 1, BLEU.NGRAM_ORDER)
             for ngram in ngrams_ref.keys():
                 ngrams[ngram] = max(ngrams[ngram], ngrams_ref[ngram])
 
@@ -283,7 +267,7 @@ class BLEU:
             sys_len += output_len
             ref_len += closest_len
 
-            sys_ngrams = BLEU.extract_ngrams(output)
+            sys_ngrams = extract_word_ngrams(output, 1, BLEU.NGRAM_ORDER)
             for ngram in sys_ngrams.keys():
                 n = len(ngram.split())
                 correct[n-1] += min(sys_ngrams[ngram], ref_ngrams.get(ngram, 0))
