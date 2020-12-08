@@ -142,6 +142,10 @@ def main():
     sys.stdin = open(sys.stdin.fileno(), mode='r', encoding='utf-8', buffering=True, newline="\n")
     sys.stdout = open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=True)
 
+    src_lang, trg_lang = '', ''
+    if args.langpair:
+        src_lang, trg_lang = args.langpair.split('-')
+
     if not args.quiet:
         logging.basicConfig(level=logging.INFO, format='sacreBLEU: %(message)s')
 
@@ -226,17 +230,17 @@ def main():
     # Internal tokenizer settings
     if args.tokenize is None:
         # set default
-        if args.langpair is not None and args.langpair.split('-')[1] == 'zh':
+        if trg_lang == 'zh':
             args.tokenize = 'zh'
-        elif args.langpair is not None and args.langpair.split('-')[1] == 'ja':
+        elif trg_lang == 'ja':
             args.tokenize = 'ja-mecab'
         else:
             args.tokenize = DEFAULT_TOKENIZER
 
     if args.langpair is not None and 'bleu' in args.metrics:
-        if args.langpair.split('-')[1] == 'zh' and args.tokenize != 'zh':
+        if trg_lang == 'zh' and args.tokenize != 'zh':
             sacrelogger.warning('You should also pass "--tok zh" when scoring Chinese...')
-        if args.langpair.split('-')[1] == 'ja' and not args.tokenize.startswith('ja-'):
+        if trg_lang == 'ja' and not args.tokenize.startswith('ja-'):
             sacrelogger.warning('You should also pass "--tok ja-mecab" when scoring Japanese...')
 
     # concat_ref_files is a list of list of reference filenames, for example:
