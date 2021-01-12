@@ -27,6 +27,9 @@ import sys
 import logging
 import pathlib
 import argparse
+from collections import defaultdict
+
+from tabulate import tabulate
 
 # Allows calling the script as a standalone utility
 # See: https://github.com/mjpost/sacrebleu/issues/86
@@ -54,8 +57,19 @@ try:
     from signal import signal, SIG_DFL
     signal(SIGPIPE, SIG_DFL)
 
+
 except ImportError:
     sacrelogger.warning('Could not import signal.SIGPIPE (this is expected on Windows machines)')
+
+EOF_ERROR_STR = """\
+
+This could be a problem with your system output or with sacreBLEU's reference database.
+If the latter, you can clean out the references cache by typing:
+
+    rm -r {sacrebleu_dir}/{test_set}
+
+They will be downloaded automatically again the next time you run sacreBLEU.
+"""
 
 
 def parse_args():
@@ -83,8 +97,8 @@ def parse_args():
                             help='output the source (src), reference (ref), or both (both, pasted) to STDOUT and quit')
 
     # I/O related arguments
-    arg_parser.add_argument('--input', '-i', type=str, default='-',
-                            help='Read input from a file instead of STDIN')
+    arg_parser.add_argument('--input', '-i', type=str, nargs='*', default=['-'],
+                            help='Read input from file(s) instead of STDIN. Significance tests require multiple systems.')
     arg_parser.add_argument('refs', nargs='*', default=[],
                             help='optional list of references (for backwards-compatibility with older scripts)')
     arg_parser.add_argument('--num-refs', '-nr', type=int, default=1,
@@ -116,6 +130,10 @@ def parse_args():
                             help='chrf BETA parameter (default: %(default)s)')
     arg_parser.add_argument('--chrf-whitespace', action='store_true', default=False,
                             help='include whitespace in chrF calculation (default: %(default)s)')
+
+    # Significance testing
+    arg_parser.add_argument('--significance-test', '-S', action='store_true',
+                            help="Enable significance testing. Requires more than one input system.")
 
     # Reporting related arguments
     arg_parser.add_argument('--quiet', '-q', default=False, action='store_true',
@@ -162,9 +180,13 @@ def main():
                 print('%30s: %s' % (testset, DATASETS[testset].get('description', '').strip()))
         sys.exit(0)
 
-    if args.sentence_level and len(args.metrics) > 1:
-        sacrelogger.error('Only one metric can be used with Sentence-level reporting.')
-        sys.exit(1)
+    if args.sentence_level:
+        if len(args.metrics) > 1:
+            sacrelogger.error('Only one metric can be used with sentence-level reporting.')
+            sys.exit(1)
+        if args.significance_test:
+            sacrelogger.error('Significance testing can only be used for corpus-level reporting.')
+            sys.exit(1)
 
     if args.citation:
         if not args.test_set:
@@ -179,7 +201,7 @@ def main():
 
     if args.num_refs != 1 and (args.test_set is not None or len(args.refs) > 1):
         sacrelogger.error('The --num-refs argument allows you to provide any number of tab-delimited references in a single file.')
-        sacrelogger.error('You can only use it with externaly-provided references, however (i.e., not with `-t`),')
+        sacrelogger.error('You can only use it with externally-provided references, however (i.e., not with `-t`),')
         sacrelogger.error('and you cannot then provide multiple reference files.')
         sys.exit(1)
 
@@ -206,8 +228,9 @@ def main():
             langpairs = get_langpairs_for_testset(test_set)
             if args.langpair not in langpairs:
                 sacrelogger.error('No such language pair "%s"', args.langpair)
-                sacrelogger.error('Available language pairs for test set "%s": %s', test_set,
-                                  ', '.join(langpairs))
+                sacrelogger.error(
+                    'Available language pairs for test set "%s": %s', test_set,
+                    ', '.join(langpairs))
                 sys.exit(1)
 
     if args.echo:
@@ -261,7 +284,7 @@ def main():
         for refno, ref_file in enumerate(ref_files):
             for lineno, line in enumerate(smart_open(ref_file, encoding=args.encoding), 1):
                 if args.num_refs != 1:
-                    splits = line.rstrip().split(sep='\t', maxsplit=args.num_refs-1)
+                    splits = line.rstrip().split(sep='\t', maxsplit=args.num_refs - 1)
                     if len(splits) != args.num_refs:
                         sacrelogger.error('FATAL: line {}: expected {} fields, but found {}.'.format(lineno, args.num_refs, len(splits)))
                         sys.exit(17)
@@ -273,18 +296,53 @@ def main():
     # Decide on the number of final references, override the argument
     args.num_refs = len(full_refs)
 
-    # Read hypotheses stream
-    if args.input == '-':
+    # Read hypotheses stream(s)
+    full_systems = []
+    sys_names = []
+
+    if args.input[0] == '-':
         inputfh = io.TextIOWrapper(sys.stdin.buffer, encoding=args.encoding)
+
+        # guess by looking at the first line
+        fields = inputfh.readline().rstrip().split('\t')
+        num_sys = len(fields)
+        full_systems = [[s] for s in fields]
+        # No explicit system name, just enumeration
+        sys_names = ['sys{}'.format(i + 1) for i in range(num_sys)]
+
+        for line in inputfh.readlines():
+            fields = line.rstrip().split('\t')
+            if len(fields) != num_sys:
+                sacrelogger.error('FATAL: the number of tab-delimited fields in the input stream differ across lines.')
+                sys.exit(17)
+            for sys_idx, sent in enumerate(fields):
+                full_systems[sys_idx].append(sent)
     else:
-        inputfh = smart_open(args.input, encoding=args.encoding)
-    full_system = inputfh.readlines()
+        # Separate files given for each system output
+        num_sys = len(args.input)
+
+        # systems is a list of list of sentences
+        for fname in args.input:
+            # Base name is assumed to be system name
+            sys_names.append(pathlib.Path(fname).name)
+            inputfh = smart_open(fname, encoding=args.encoding)
+            lines = inputfh.readlines()
+            full_systems.append(lines)
+
+    # TODO: get rid of this
+    full_system = full_systems[0]
 
     # Filter sentences according to a given origlang
-    system, *refs = filter_subset(
-        [full_system, *full_refs], args.test_set, args.langpair, args.origlang, args.subset)
+    outputs = filter_subset(
+        [*full_systems, *full_refs], args.test_set, args.langpair,
+        args.origlang, args.subset)
 
-    if len(system) == 0:
+    # Re-split back into compatible names
+    systems = outputs[:num_sys]
+    refs = outputs[num_sys:]
+
+    # It is OK to test one of the systems for this
+    if len(systems[0]) == 0:
         message = 'Test set %s contains no sentence' % args.test_set
         if args.origlang is not None or args.subset is not None:
             message += ' with'
@@ -296,33 +354,48 @@ def main():
     # Create metric inventory, let each metric consume relevant args from argparse
     metrics = [METRICS[met](args) for met in args.metrics]
 
+    # TODO: here we need to make sure that all metrics pre-processed
+    # the input/ref streams, cached the n-grams etc, and will not yield
+    # lazy EOFErrors
+
     # Handle sentence level and quit
     if args.sentence_level:
+        if num_sys > 1:
+            sacrelogger.error('Sentence-level reporting is not compatible with multiple input systems.')
+            sys.exit(1)
+
         # one metric in use for sentence-level
         metric = metrics[0]
-        for output, *references in zip(system, *refs):
+
+        for output, *references in zip(systems[0], *refs):
             score = metric.sentence_score(output, references)
             print(score.format(args.width, args.score_only, metric.signature))
 
         sys.exit(0)
 
-    # Else, handle system level
+    # Else, handle system level scores
+    scores = defaultdict(list)
+    scores['System'] = sys_names
+
     for metric in metrics:
-        try:
-            score = metric.corpus_score(system, refs)
-        except EOFError:
-            sacrelogger.error('The input and reference stream(s) were of different lengths.')
-            if args.test_set is not None:
-                sacrelogger.error(
-                    '\nThis could be a problem with your system output or with sacreBLEU\'s reference database.\n'
-                    'If the latter, you can clean out the references cache by typing:\n\n'
-                    '    rm -r %s/%s\n\n'
-                    'They will be downloaded automatically again the next time you run sacreBLEU.',
-                    SACREBLEU_DIR, args.test_set,
-                )
-            sys.exit(1)
-        else:
-            print(score.format(args.width, args.score_only, metric.signature))
+        # Allow for multiple systems to be reported
+        for system in systems:
+            try:
+                score = metric.corpus_score(system, refs)
+            except EOFError:
+                sacrelogger.error('The input and reference stream(s) are of different lengths.')
+                if args.test_set is not None:
+                    sacrelogger.error(
+                        EOF_ERROR_STR.format(sacrebleu_dir=SACREBLEU_DIR, test_set=args.test_set))
+                sys.exit(1)
+            else:
+                scores[score.prefix].append(score.score)
+
+    # Print out the report
+    print(tabulate(scores, headers='keys', tablefmt='latex_booktabs'))
+#     print()
+    # for metric in metrics:
+        # print(' * {}+{}'.format(metric.name, metric.signature))
 
     if args.detail:
         width = args.width
