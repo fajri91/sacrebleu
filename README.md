@@ -12,23 +12,35 @@ Why use this version of BLEU?
 - It produces the same values as official script (`mteval-v13a.pl`) used by WMT
 - It outputs the BLEU score without the comma, so you don't have to remove it with `sed` (Looking at you, `multi-bleu.perl`)
 
+# Backward incompatible changes in 1.5.0 (January 2021)
+
+SacreBLEU 1.5.0 changes a couple of BLEU-related defaults for sentence-level BLEU computation. You **should** expect different scores when compared to previous versions, if you compute sentence-level BLEUs with `sacrebleu.sentence_bleu()` convenience function.
+
+- The `sacrebleu.sentence_bleu()` convenience function was using a different smoothing method (`floor`) than the command-line `sacrebleu` utility (`exp`). As of 1.5.0, the API function is also using `exp` smoothing for consistency.
+
+- The default value used for `floor` smoothing is now 0.1 instead of 0, which previously
+had the effect of not applying smoothing at all.
+
+If you would like to preserve compatibility with sentence-level BLEU scores that you computed in versions prior to 1.5.0, you need to make sure that you use (i) the `floor` smoothing method, and (ii) the smoothing value is forced to `0`.
+
 # QUICK START
+Install the Python module:
 
-Install the Python module (Python 3 only)
-
-    pip3 install sacrebleu
+    pip install sacrebleu
 
 In order to install Japanese tokenizer support through `mecab-python3`, you need to run the
 following command instead, to perform a full installation with dependencies:
 
-    pip3 install sacrebleu[ja]
+    pip install sacrebleu[ja]
 
-Alternately, you can install from the source:
+Alternately, you can install from the source folder:
 
-    python3 setup.py install
+    python setup.py install
+
+Once installed, you can use the command-line interface
 
 This installs a shell script, `sacrebleu`.
-(You can also run `python3 -m sacrebleu`, so long as this root directory is in your `$PYTHONPATH`).
+(You can also run `python -m sacrebleu`, so long as this root directory is in your `$PYTHONPATH`).
 
 Get a list of available test sets:
 
@@ -38,7 +50,7 @@ Download the source for one of the pre-defined test sets:
 
     sacrebleu -t wmt14 -l de-en --echo src > wmt14-de-en.src
 
-(you can also use long parameter names for readability):
+You can also use long parameter names for readability:
 
     sacrebleu --test-set wmt14 --language-pair de-en --echo src > wmt14-de-en.src
 
@@ -47,7 +59,7 @@ After tokenizing, translating, and detokenizing it, you can score your decoder o
     cat output.detok.txt | sacrebleu -t wmt14 -l de-en
 
 SacreBLEU knows about common WMT test sets, but you can also use it to score system outputs with arbitrary references.
-It also works in backwards compatible model where you manually specify the reference(s), similar to the format of `multi-bleu.txt`:
+It also works in backwards compatible mode where you manually specify the reference(s), similar to the format of `multi-bleu.txt`:
 
     cat output.detok.txt | sacrebleu REF1 [REF2 ...]
 
